@@ -91,3 +91,166 @@ if st.button("양육 전략 확인하기 🚀"):
 # ----------------------------
 st.markdown("---")
 st.caption("출처: Thomas & Chess 기질 연구, 한국 아동·청소년 기질 및 성격검사 연구(KPRC, CBCL 등)")
+# streamlit_app.py
+import streamlit as st
+import pandas as pd
+import altair as alt
+import os
+
+st.set_page_config(page_title="MBTI 유형별 Top 10 국가", layout="wide")
+
+st.title("MBTI 유형별 비율이 가장 높은 국가 Top 10 📊")
+st.caption("같은 폴더에 CSV가 있으면 기본적으로 그 파일을 사용하고, 없을 경우 업로드한 파일을 사용합니다.")
+
+# ---- Sidebar ----
+st.sidebar.header("설정")
+uploaded = st.sidebar.file_uploader("CSV 업로드", type=["csv"])
+top_n = st.sidebar.slider("Top N", min_value=5, max_value=20, value=10, step=1)
+as_percent = st.sidebar.checkbox("값을 %로 보기", value=True)
+show_table = st.sidebar.checkbox("표도 함께 보기", value=False)
+
+# 16개 MBTI 유형
+MBTI_TYPES = [
+    "INTJ","INTP","ENTJ","ENTP",
+    "INFJ","INFP","ENFJ","ENFP",
+    "ISTJ","ISFJ","ESTJ","ESFJ",
+    "ISTP","ISFP","ESTP","ESFP"
+]
+
+def normalize_columns(cols):
+    return [c.strip() for c in cols]
+
+def detect_country_col(df):
+    # 국가 컬럼 추정
+    candidates = ["country", "Country", "COUNTRY", "국가", "나라"]
+    for c in df.columns:
+        if c in candidates or "country" in c.lower():
+            return c
+    return df.columns[0]  # 기본적으로 첫 번째 열을 국가로 가정
+
+def prepare_long(df, country_col):
+    # MBTI 열만 추출
+    col_map = {}
+    for c in df.columns:
+        if c.strip().upper() in MBTI_TYPES:
+            col_map[c] = c.strip().upper()
+    if not col_map:
+        st.error("MBTI 유형 열을 찾지 못했어요. 열 이름이 16개 유형과 일치하는지 확인해 주세요.")
+        st.stop()
+
+    use_cols = [country_col] + list(col_map.keys())
+    skinny = df[use_cols].copy()
+    skinny = skinny.rename(columns={country_col: "country", **col_map})
+
+    long_df = skinny.melt(id_vars=["country"], var_name="type", value_name="value")
+    long_df["value"] = pd.to_numeric(long_df["value"], errors="coerce")
+    long_df = long_df.dropna(subset=["value"])
+    return long_df
+
+def detect_scale_hint(long_df):
+    # 국가별 합계의 중앙값으로 스케일 추정
+    sums = long_df.pivot_table(index="country", columns="type", values="value", aggfunc="first").sum(axis=1)
+    med = sums.median()
+    if 0.9 <= med <= 1.1:
+        return "proportion"  # 0~1 비율
+    elif 95 <= med <= 105:
+        return "percentage"  # 0~100 퍼센트
+    else:
+        return "unknown"
+
+def top_n_countries_for_type(long_df, mbti_type, n):
+    sub = long_df[long_df["type"] == mbti_type].dropna(subset=["value"]).copy()
+    sub = sub.sort_values("value", ascending=False).head(n)
+    return sub
+
+# ---- CSV 로드 ----
+default_path = "countriesMBTI_16types.csv"
+
+if os.path.exists(default_path):
+    # 기본 폴더에 CSV 파일이 있을 경우 우선 사용
+    st.success(f"기본 파일을 사용합니다: {default_path}")
+    df = pd.read_csv(default_path)
+elif uploaded is not None:
+    st.success("업로드한 파일을 사용합니다.")
+    try:
+        df = pd.read_csv(uploaded)
+    except Exception:
+        uploaded.seek(0)
+        df = pd.read_csv(uploaded, encoding="utf-8", engine="python")
+else:
+    st.error("CSV 파일이 필요합니다. 폴더에 기본 파일을 두거나 업로드해 주세요.")
+    st.stop()
+
+df.columns = normalize_columns(df.columns)
+country_col = detect_country_col(df)
+long_df = prepare_long(df, country_col)
+scale_hint = detect_scale_hint(long_df)
+
+# ---- 유형 선택 ----
+available_types = sorted(long_df["type"].unique().tolist(), key=lambda x: MBTI_TYPES.index(x) if x in MBTI_TYPES else 999)
+sel_type = st.selectbox("MBTI 유형 선택", options=available_types, index=available_types.index("INFP") if "INFP" in available_types else 0)
+
+# Top N 데이터 추출
+top_df = top_n_countries_for_type(long_df, sel_type, top_n).copy()
+
+# 값 스케일링
+def format_value(v):
+    if as_percent:
+        if scale_hint == "percentage":
+            return v
+        else:
+            return v * 100.0
+    else:
+        if scale_hint == "percentage":
+            return v / 100.0
+        else:
+            return v
+
+top_df["display_value"] = top_df["value"].apply(format_value)
+
+value_title = f"{sel_type} 비율" + (" (%)" if as_percent else " (0~1)")
+
+# ---- Altair 그래프 ----
+base = alt.Chart(top_df).encode(
+    x=alt.X("display_value:Q", title=value_title),
+    y=alt.Y("country:N", sort="-x", title="국가"),
+    tooltip=[
+        alt.Tooltip("country:N", title="국가"),
+        alt.Tooltip("display_value:Q", title=value_title, format=".2f"),
+    ]
+)
+
+bars = base.mark_bar().encode()
+text = base.mark_text(
+    align="left",
+    baseline="middle",
+    dx=3
+).encode(
+    text=alt.Text("display_value:Q", format=".2f")
+)
+
+chart = (bars + text).properties(
+    width=800,
+    height=40 * len(top_df),
+    title=f"{sel_type} 비율이 가장 높은 국가 Top {len(top_df)}"
+).interactive()
+
+st.altair_chart(chart, use_container_width=True)
+
+# ---- 표 출력 옵션 ----
+if show_table:
+    pretty = top_df[["country", "type", "display_value"]].rename(columns={
+        "country": "국가",
+        "type": "유형",
+        "display_value": "값" + ("(%)" if as_percent else "")
+    })
+    st.dataframe(pretty.reset_index(drop=True))
+
+# ---- 품질 진단 ----
+with st.expander("데이터 스케일 및 품질 진단"):
+    st.write(
+        f"- 감지된 스케일: **{('0~1 비율' if scale_hint=='proportion' else ('0~100 퍼센트' if scale_hint=='percentage' else '불명확'))}**"
+    )
+    sums = long_df.pivot_table(index="country", columns="type", values="value", aggfunc="first").sum(axis=1)
+    st.write(f"- 국가별 합계 중앙값: **{sums.median():.3f}**")
+
