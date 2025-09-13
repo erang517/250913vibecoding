@@ -1,6 +1,6 @@
 import streamlit as st
 st.title('한신초 IB 탐구설계 도우미')
-st.write('탐구설계 도우미입니다!')
+st.write('탐구설계 도우미!')
 # streamlit_app.py
 import streamlit as st
 import textwrap
